@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 
 // Use local worker via CDN (avoids bundling issues)
@@ -9,11 +9,43 @@ export interface PdfPage {
   text: string;
 }
 
+const LAST_BOOK_KEY = "readaloud:lastbook";
+const LAST_BOOK_PAGES_KEY = "readaloud:lastbook-pages";
+
+function saveLastBook(fileName: string, pages: PdfPage[]) {
+  try {
+    localStorage.setItem(LAST_BOOK_KEY, fileName);
+    localStorage.setItem(LAST_BOOK_PAGES_KEY, JSON.stringify(pages));
+  } catch {}
+}
+
+function clearLastBook() {
+  localStorage.removeItem(LAST_BOOK_KEY);
+  localStorage.removeItem(LAST_BOOK_PAGES_KEY);
+}
+
+function loadLastBook(): { fileName: string; pages: PdfPage[] } | null {
+  try {
+    const fileName = localStorage.getItem(LAST_BOOK_KEY);
+    const raw = localStorage.getItem(LAST_BOOK_PAGES_KEY);
+    if (fileName && raw) return { fileName, pages: JSON.parse(raw) };
+  } catch {}
+  return null;
+}
+
 export function usePdfExtractor() {
   const [pages, setPages] = useState<PdfPage[]>([]);
   const [fileName, setFileName] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const saved = loadLastBook();
+    if (saved) {
+      setFileName(saved.fileName);
+      setPages(saved.pages);
+    }
+  }, []);
 
   const extractPdf = useCallback(async (file: File) => {
     setLoading(true);
@@ -41,6 +73,7 @@ export function usePdfExtractor() {
       }
 
       setPages(extracted);
+      saveLastBook(file.name, extracted);
     } catch (e) {
       setError("Failed to read the PDF. Please check that the file is valid.");
       console.error(e);
@@ -53,6 +86,7 @@ export function usePdfExtractor() {
     setPages([]);
     setFileName("");
     setError(null);
+    clearLastBook();
   }, []);
 
   return { pages, fileName, loading, error, extractPdf, reset };
