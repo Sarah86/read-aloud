@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# build output
+frontend/dist/
+frontend/.vite/
+
+# env files — never commit keys
+.env
+.env.local
+.env*.local
+
+# vercel
+.vercel/
+
+# logs
+*.log
