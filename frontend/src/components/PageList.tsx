@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { PdfPage } from "../hooks/usePdfExtractor";
 
 interface Props {
@@ -8,6 +9,15 @@ interface Props {
 }
 
 export function PageList({ pages, selectedPage, listenedPages, onSelect }: Props) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Keep the selected page visible, e.g. when auto-play advances to it.
+  useEffect(() => {
+    scrollRef.current
+      ?.querySelector(".page-item.selected")
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedPage]);
+
   if (pages.length === 0) return null;
 
   return (
@@ -16,7 +26,7 @@ export function PageList({ pages, selectedPage, listenedPages, onSelect }: Props
         <span className="page-list-title">pages</span>
         <span className="page-list-count">{pages.length}</span>
       </div>
-      <div className="page-list-scroll">
+      <div className="page-list-scroll" ref={scrollRef}>
         {pages.map((page) => {
           const preview = page.text.slice(0, 100).trim();
           const isSelected = page.pageNum === selectedPage;

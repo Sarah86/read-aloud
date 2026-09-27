@@ -18,6 +18,8 @@ export function DropZone({ onFile, loading }: Props) {
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Reset so picking the same file again still fires onChange.
+    e.target.value = "";
     if (file) onFile(file);
   };
 

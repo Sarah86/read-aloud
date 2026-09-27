@@ -11,9 +11,26 @@ export interface TTSCacheContext {
 
 const CHUNK_SIZE = 4000; // chars, below OpenAI's 4096 limit
 
+// Break a piece of text that has no sentence boundary into <= size parts,
+// preferring whitespace so words aren't cut in half.
+function hardSplit(text: string, size: number): string[] {
+  const parts: string[] = [];
+  let rest = text;
+  while (rest.length > size) {
+    let cut = rest.lastIndexOf(" ", size);
+    if (cut <= 0) cut = size;
+    parts.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts;
+}
+
 function splitIntoChunks(text: string, size: number): string[] {
   const chunks: string[] = [];
-  const sentences = text.split(/(?<=[.!?])\s+/);
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .flatMap((s) => (s.length > size ? hardSplit(s, size) : [s]));
   let current = "";
 
   for (const sentence of sentences) {
@@ -52,14 +69,22 @@ export function useTTS(apiKey = "") {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const chunksRef = useRef<string[]>([]);
   const chunkIndexRef = useRef(0);
-  const abortRef = useRef(false);
+  // Incremented on every speak/stop. Async work from an older run compares its
+  // captured id against this and bails out, so a slow fetch from a previous
+  // page can never start playing over the current one.
+  const runIdRef = useRef(0);
+  const urlRef = useRef<string | null>(null);
 
   const stopAudio = useCallback(() => {
-    abortRef.current = true;
+    runIdRef.current++;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = "";
       audioRef.current = null;
+    }
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
     }
     setStatus("idle");
     setCurrentChunk(0);
@@ -72,10 +97,17 @@ export function useTTS(apiKey = "") {
     async (
       chunks: string[],
       index: number,
-      ctx: TTSCacheContext | null
+      ctx: TTSCacheContext | null,
+      runId: number,
+      onEnd?: () => void
     ) => {
-      if (abortRef.current || index >= chunks.length) {
-        if (!abortRef.current) setStatus("idle");
+      const aborted = () => runIdRef.current !== runId;
+      if (aborted()) return;
+      if (index >= chunks.length) {
+        setStatus("idle");
+        setCurrentChunk(0);
+        setTotalChunks(0);
+        onEnd?.();
         return;
       }
 
@@ -99,52 +131,62 @@ export function useTTS(apiKey = "") {
           });
 
           if (!response.ok) throw new Error("TTS request failed");
-          if (abortRef.current) return;
+          if (aborted()) return;
 
           audioBuffer = await response.arrayBuffer();
 
           if (cacheKey) setCachedAudio(cacheKey, audioBuffer);
         }
 
-        if (abortRef.current) return;
+        if (aborted()) return;
 
         const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         audioRef.current = audio;
+        urlRef.current = url;
 
         audio.onplay = () => setStatus("playing");
         audio.onloadedmetadata = () => setDuration(audio.duration);
         audio.ontimeupdate = () => setPlaybackTime(audio.currentTime);
         audio.onended = () => {
           URL.revokeObjectURL(url);
-          if (!abortRef.current) {
+          if (urlRef.current === url) urlRef.current = null;
+          if (!aborted()) {
             setPlaybackTime(0);
             setDuration(0);
-            fetchAndPlayChunk(chunks, index + 1, ctx);
+            fetchAndPlayChunk(chunks, index + 1, ctx, runId, onEnd);
           }
         };
-        audio.onerror = () => setStatus("error");
+        audio.onerror = () => {
+          if (!aborted()) setStatus("error");
+        };
 
         await audio.play();
       } catch {
-        if (!abortRef.current) setStatus("error");
+        if (!aborted()) setStatus("error");
       }
     },
     [voice, speed]
   );
 
+  // onEnd fires only when every chunk has played through naturally — not on
+  // stop(), a new speak(), or an error.
   const speak = useCallback(
-    async (text: string, ctx: TTSCacheContext | null = null) => {
+    async (
+      text: string,
+      ctx: TTSCacheContext | null = null,
+      onEnd?: () => void
+    ) => {
       stopAudio();
-      abortRef.current = false;
+      const runId = runIdRef.current;
 
       const chunks = splitIntoChunks(text, CHUNK_SIZE);
       chunksRef.current = chunks;
       chunkIndexRef.current = 0;
       setTotalChunks(chunks.length);
 
-      fetchAndPlayChunk(chunks, 0, ctx);
+      fetchAndPlayChunk(chunks, 0, ctx, runId, onEnd);
     },
     [fetchAndPlayChunk, stopAudio]
   );
