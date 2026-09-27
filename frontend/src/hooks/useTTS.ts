@@ -11,6 +11,12 @@ export interface TTSCacheContext {
 
 const CHUNK_SIZE = 4000; // chars, below OpenAI's 4096 limit
 
+// 10ms of silence. Played on the Listen tap to "unlock" the audio element:
+// mobile browsers (iOS Safari especially) only allow play() inside a user
+// gesture, and the real audio arrives seconds later after the TTS request.
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 // Break a piece of text that has no sentence boundary into <= size parts,
 // preferring whitespace so words aren't cut in half.
 function hardSplit(text: string, size: number): string[] {
@@ -66,7 +72,11 @@ export function useTTS(apiKey = "") {
   const apiKeyRef = useRef(apiKey);
   apiKeyRef.current = apiKey;
 
+  // A single audio element reused for every chunk and page. Once it has been
+  // played inside a tap, the browser lets it play again later without one,
+  // which is what makes the first Listen and auto-play work on mobile.
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const getAudio = () => (audioRef.current ??= new Audio());
   const chunksRef = useRef<string[]>([]);
   const chunkIndexRef = useRef(0);
   // Incremented on every speak/stop. Async work from an older run compares its
@@ -77,10 +87,15 @@ export function useTTS(apiKey = "") {
 
   const stopAudio = useCallback(() => {
     runIdRef.current++;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      audioRef.current = null;
+    const audio = audioRef.current;
+    if (audio) {
+      // Detach handlers first: clearing the source fires events (e.g. error)
+      // that would otherwise flip the UI to "Try again".
+      audio.onplay = audio.onloadedmetadata = audio.ontimeupdate = null;
+      audio.onended = audio.onerror = null;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
     }
     if (urlRef.current) {
       URL.revokeObjectURL(urlRef.current);
@@ -142,26 +157,27 @@ export function useTTS(apiKey = "") {
 
         const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
         const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audioRef.current = audio;
+        const audio = getAudio();
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
         urlRef.current = url;
 
-        audio.onplay = () => setStatus("playing");
-        audio.onloadedmetadata = () => setDuration(audio.duration);
-        audio.ontimeupdate = () => setPlaybackTime(audio.currentTime);
+        // Ignore events still queued from the previous source (e.g. the
+        // silent unlock clip ending), which would otherwise skip a chunk.
+        const current = () => !aborted() && audio.src === url;
+        audio.onplay = () => current() && setStatus("playing");
+        audio.onloadedmetadata = () => current() && setDuration(audio.duration);
+        audio.ontimeupdate = () => current() && setPlaybackTime(audio.currentTime);
         audio.onended = () => {
-          URL.revokeObjectURL(url);
-          if (urlRef.current === url) urlRef.current = null;
-          if (!aborted()) {
-            setPlaybackTime(0);
-            setDuration(0);
-            fetchAndPlayChunk(chunks, index + 1, ctx, runId, onEnd);
-          }
+          if (!current()) return;
+          setPlaybackTime(0);
+          setDuration(0);
+          fetchAndPlayChunk(chunks, index + 1, ctx, runId, onEnd);
         };
         audio.onerror = () => {
-          if (!aborted()) setStatus("error");
+          if (current()) setStatus("error");
         };
 
+        audio.src = url;
         await audio.play();
       } catch {
         if (!aborted()) setStatus("error");
@@ -180,6 +196,11 @@ export function useTTS(apiKey = "") {
     ) => {
       stopAudio();
       const runId = runIdRef.current;
+
+      // Must run synchronously in the tap handler, before any await.
+      const audio = getAudio();
+      audio.src = SILENT_WAV;
+      audio.play().catch(() => {});
 
       const chunks = splitIntoChunks(text, CHUNK_SIZE);
       chunksRef.current = chunks;
