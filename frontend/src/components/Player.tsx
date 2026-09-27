@@ -24,6 +24,8 @@ interface Props {
   onSeek: (time: number) => void;
   onVoiceChange: (v: TTSVoice) => void;
   onSpeedChange: (s: number) => void;
+  autoPlay: boolean;
+  onAutoPlayChange: (v: boolean) => void;
   hasText: boolean;
 }
 
@@ -37,7 +39,7 @@ export function Player({
   status, voice, speed, currentChunk, totalChunks,
   playbackTime, duration,
   onPlay, onPause, onResume, onStop, onSeek,
-  onVoiceChange, onSpeedChange, hasText,
+  onVoiceChange, onSpeedChange, autoPlay, onAutoPlayChange, hasText,
 }: Props) {
   const isActive = status === "playing" || status === "paused" || status === "loading";
 
@@ -140,6 +142,15 @@ export function Player({
             style={{ width: "100%" }}
           />
         </div>
+
+        <label className="setting-toggle">
+          <input
+            type="checkbox"
+            checked={autoPlay}
+            onChange={(e) => onAutoPlayChange(e.target.checked)}
+          />
+          <span>auto-play next page</span>
+        </label>
       </div>
 
       <style>{`
@@ -280,6 +291,20 @@ export function Player({
           display: flex;
           flex-direction: column;
           gap: 6px;
+        }
+        .setting-toggle {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 10px;
+          color: var(--text-muted);
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          cursor: pointer;
+        }
+        .setting-toggle input {
+          accent-color: var(--accent);
+          cursor: pointer;
         }
         .setting-label {
           font-size: 10px;

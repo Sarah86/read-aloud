@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { usePdfExtractor } from "./hooks/usePdfExtractor";
 import { useTTS } from "./hooks/useTTS";
 import { useListenedPages } from "./hooks/useListenedPages";
@@ -6,12 +6,15 @@ import { useApiKey } from "./hooks/useApiKey";
 import { DropZone } from "./components/DropZone";
 import { Player } from "./components/Player";
 import { PageList } from "./components/PageList";
+import { PasteText } from "./components/PasteText";
 import "./App.css";
+
+const AUTOPLAY_KEY = "readaloud:autoplay";
 
 export default function App() {
   const { requiresApiKey, apiKey, setApiKey } = useApiKey();
 
-  const { pages, fileName, loading, error, extractPdf, reset } =
+  const { pages, fileName, docId, loading, error, extractPdf, loadText, reset } =
     usePdfExtractor();
   const {
     status,
@@ -30,9 +33,23 @@ export default function App() {
     setSpeed,
   } = useTTS(apiKey);
 
-  const { listenedPages, markListened } = useListenedPages(fileName);
+  const { listenedPages, markListened } = useListenedPages(docId);
 
   const [selectedPage, setSelectedPage] = useState(1);
+  const [autoPlay, setAutoPlayState] = useState(() => {
+    try {
+      return localStorage.getItem(AUTOPLAY_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const setAutoPlay = (value: boolean) => {
+    setAutoPlayState(value);
+    try {
+      localStorage.setItem(AUTOPLAY_KEY, String(value));
+    } catch {}
+  };
 
   const currentPageText =
     pages.find((p) => p.pageNum === selectedPage)?.text ?? "";
@@ -43,18 +60,39 @@ export default function App() {
     await extractPdf(file);
   };
 
+  const handlePaste = (text: string) => {
+    stop();
+    setSelectedPage(1);
+    loadText(text);
+  };
+
   const handleReset = () => {
     stop();
     reset();
     setSelectedPage(1);
   };
 
-  const handlePlay = () => {
-    if (currentPageText) {
-      markListened(selectedPage);
-      speak(currentPageText, { fileName, pageNum: selectedPage });
-    }
+  const playPage = (pageNum: number) => {
+    const text = pages.find((p) => p.pageNum === pageNum)?.text;
+    if (!text) return;
+    setSelectedPage(pageNum);
+    speak(text, { fileName: docId, pageNum }, () => {
+      markListened(pageNum);
+      // Read through a ref so we use the latest pages/voice/speed/autoPlay,
+      // not the values captured when this page started.
+      onPageEndRef.current(pageNum);
+    });
   };
+
+  const onPageEndRef = useRef<(pageNum: number) => void>(() => {});
+  onPageEndRef.current = (pageNum: number) => {
+    if (!autoPlay) return;
+    const idx = pages.findIndex((p) => p.pageNum === pageNum);
+    const next = pages[idx + 1];
+    if (idx !== -1 && next) playPage(next.pageNum);
+  };
+
+  const handlePlay = () => playPage(selectedPage);
 
   const handlePageSelect = (pageNum: number) => {
     stop();
@@ -89,7 +127,7 @@ export default function App() {
             </div>
           )}
           {hasPdf && (
-            <button className="btn-reset" onClick={handleReset} title="New PDF">
+            <button className="btn-reset" onClick={handleReset} title="New PDF or text">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polyline points="1 4 1 10 7 10" />
                 <path d="M3.51 15a9 9 0 1 0 .49-3.5" />
@@ -107,9 +145,12 @@ export default function App() {
               <br />
               <em>into natural speech</em>
             </h1>
-            <p className="subtitle">Upload a PDF and listen with AI voices</p>
+            <p className="subtitle">
+              Upload a PDF or paste text and listen with AI voices
+            </p>
             <DropZone onFile={handleFile} loading={loading} />
             {error && <p className="error-msg">{error}</p>}
+            <PasteText onSubmit={handlePaste} disabled={loading} />
           </div>
         ) : (
           <div className="reader-layout">
@@ -147,6 +188,8 @@ export default function App() {
               onSeek={seek}
               onVoiceChange={setVoice}
               onSpeedChange={setSpeed}
+              autoPlay={autoPlay}
+              onAutoPlayChange={setAutoPlay}
               hasText={!!currentPageText}
             />
 
